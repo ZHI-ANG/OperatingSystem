@@ -1,1 +1,4 @@
-# MIT6.828 Labs
+# MIT 6.828 Labs
+
+Notes and solutions to the labs of MIT 6.828.
+
