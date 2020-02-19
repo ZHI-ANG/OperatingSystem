@@ -276,11 +276,20 @@ mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 
 Compile and run, set the breakpoint.
 
-**Important: Calling stack**
+**Important: Calling Chain**
 
-Before going on, it's necessary to learn about the GCC x86 calling convention. The calling stack of a callee and its caller looks like this:
+Before going on, it's necessary to learn about the GCC x86 calling convention. 
 
-``` shell
+| Example instruction | What it does                                  |
+| ------------------- | --------------------------------------------- |
+| pushl %eax          | subl $4, %esp <br />movl %eax, (%esp)         |
+| popl %eax           | movl (%esp), %eax  <br />addl $4, %esp        |
+| call 0x12345        | pushl %eip(\*)  <br />movl $0x12345, %eip(\*) |
+| ret                 | popl %eip (\*)                                |
+
+The stack of a callee and its caller looks like this:
+
+``` assembly
 		       +------------+   |
 		       | arg 2      |   \
 		       +------------+    >- previous function's stack frame
@@ -289,7 +298,7 @@ Before going on, it's necessary to learn about the GCC x86 calling convention. T
 		       | ret %eip   |   /  ---> eip will be used by ret when the current func ret
 		       +============+      ---> Here is no skip on the stack
 		       | saved %ebp |   \
-		%ebp-> +------------+   |
+		%ebp-> +------------+   |  
 		       |            |   |
 		       |   local    |   \
 		       | variables, |    >- current function's stack frame
@@ -300,16 +309,25 @@ Before going on, it's necessary to learn about the GCC x86 calling convention. T
 		
 ```
 
-| Example instruction | What it does                                  |
-| ------------------- | --------------------------------------------- |
-| pushl %eax          | subl $4, %esp <br />movl %eax, (%esp)         |
-| popl %eax           | movl (%esp), %eax  <br />addl $4, %esp        |
-| call 0x12345        | pushl %eip(\*)  <br />movl $0x12345, %eip(\*) |
-| ret                 | popl %eip (\*)                                |
+**`eip` or `cs:eip`, always points to the next instruction to run.** Thus it is important to save `eip` at the right time and position. When enter the callee, `eip` must points to the callee's first instruction.
 
-`eip` ensures the calling stack to return at the right position.
+The old `%ebp` is pushed to stack when a new function enters and popped when the function returns explicitly:  
 
-Now we know 
+```assembly
+Current Function:
+	pushl %ebp
+	movl %esp, %ebp
+	
+	#################################
+    ##  Here is the function body  ##
+    #################################
+    
+    mov %ebp, %esp
+    popl %ebp
+    ret
+```
+
+Thus `ebp` records the calling chain.
 
 ##### 4. Run the following code.
 
