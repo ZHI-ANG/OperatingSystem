@@ -1,4 +1,4 @@
-# Assignment of Lab 1 - Bootstrap
+# MIT 6.828 Lab 1  实验笔记
 
 ## Part 1: PC Bootstrap
 
@@ -56,11 +56,11 @@ is GDB's disassembly of the first instruction to be executed. From this output y
 
 ## Part 2: The Boot Loader
 
-#### 1. At what point does the processor start executing 32-bit code? What exactly causes the switch from 16- to 32-bit mode?
+##### 1. At what point does the processor start executing 32-bit code? What exactly causes the switch from 16- to 32-bit mode?
 
 When `CR0` register turns on. Before which, *gdt* is loaded, and the `cs`, `ds`, `ss` registers are set to specific values.
 
-#### 2. What is the *last* instruction of the boot loader executed, and what is the *first* instruction of the kernel it just loaded?
+##### 2. What is the *last* instruction of the boot loader executed, and what is the *first* instruction of the kernel it just loaded?
 
 According to the disassembly file `obj/boot/boot.asm`, the last instruction of the boot loader:
 
@@ -86,13 +86,11 @@ f010000c <entry>:
 movw $0x1234, 0x472
 ```
 
-Since the last instruction in `boot/main.c` is
-
-#### 3. *Where* is the first instruction of the kernel?
+##### 3. *Where* is the first instruction of the kernel?
 
 Loaded at the physical address of `0x0100000`(1M)
 
-#### 4. How does the boot loader decide how many sectors it must read in order to fetch the entire kernel from disk? Where does it find this information?
+##### 4. How does the boot loader decide how many sectors it must read in order to fetch the entire kernel from disk? Where does it find this information?
 
 From the ELF *program header*, more details are as follows.
 
@@ -430,7 +428,7 @@ getint(va_list *ap, int lflag)
 
 The macro`va_arg` first locates at the `ap` location in the memory and take `len(type)`bytes out of the memory. That is the argument we passed in when calling function `cprintf()`.
 
-We could verify our assumption by debuging `lib/printfmt.c`:
+We could verify our assumption by debugging `lib/printfmt.c`:
 
 ``` assembly
 (gdb) b lib/printfmt.c:75
@@ -709,7 +707,7 @@ mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 
 **Exercise 12.** Complete the implementation of `debuginfo_eip` by inserting the call to stab_binsearch to find the line number for an address. Add a backtrace command to the kernel monitor, and extend your implementation of `mon_backtrace` to call `debuginfo_eip` and print a line for each stack frame of the form:
 
-```swift
+```assembly
 K> backtrace
 Stack backtrace:
   ebp f010ff78  eip f01008ae  args 00000001 f010ff8c 00000000 f0110580 00000000
@@ -721,3 +719,109 @@ Stack backtrace:
 K>
 ```
 
+`stab` saves the debug information of a program, including tokens of the `.c` file name, line number in the `.c` file of a specific assembly instruction, etc.
+
+``` assembly
+username@pc:~/6.828/lab$ objdump -h obj/kern/kernel
+
+obj/kern/kernel:     file format elf32-i386
+
+Sections:
+Idx Name          Size      VMA       LMA       File off  Algn
+  2 .stab         00003901  f0101fac  00101fac  00002fac  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA
+  3 .stabstr      000018e7  f01058ad  001058ad  000068ad  2**0
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA
+                  
+username@pc:~/6.828/lab$ objdump -G obj/kern/kernel | head -n 30
+
+obj/kern/kernel:     file format elf32-i386
+
+Contents of .stab section:
+
+Symnum n_type n_othr n_desc n_value  n_strx String
+
+-1     HdrSym 0      1215   000018e6 1     
+0      SO     0      0      f0100000 1      {standard input}
+1      SOL    0      0      f010000c 18     kern/entry.S  # ----> token of the file name
+2      SLINE  0      44     f010000c 0      
+... ...
+13     SLINE  0      83     f010003e 0      
+14     SO     0      2      f0100040 31     kern/entrypgdir.c
+15     OPT    0      0      00000000 49     gcc2_compiled.
+... ...
+```
+
+To the line number of an assembly instruction, the program have to check `N_SLINE` in the symbol table. Thus, the code should be like this:
+
+``` c
+	stab_binsearch(stabs, &lline, &rline, N_SLINE, addr);
+	if(lline <= rline){
+		info->eip_file = stabs[lline].n_desc;
+	} else {
+		return -1;
+	}
+```
+
+Then call `debuginfo_eip` in `mon_backtrace`, to print out the debug information:
+
+``` c
+mon_backtrace(int argc, char **argv, struct Trapframe *tf)
+{
+	// Your code here.
+	uint32_t ebp, *ptr_ebp;
+	struct Eipdebuginfo info;
+	ebp = read_ebp();
+	
+	cprintf("Stack backtrace:\n");
+	
+	while (ebp!=0){
+		ptr_ebp = (uint32_t *)ebp;
+		cprintf("\tebp %x  eip %x  args %x %x %x %x %x\n",
+				ebp, ptr_ebp[1], ptr_ebp[2], ptr_ebp[3], ptr_ebp[4], ptr_ebp[5], ptr_ebp[6]);
+		
+		if (debuginfo_eip(ptr_ebp[1], &info) == 0){
+			uint32_t fn_offset = ptr_ebp[1] - info.eip_fn_addr;
+            cprintf("\t\t%s:%d: %.*s+%d\n", info.eip_file, info.eip_line,info.eip_fn_namelen,  info.eip_fn_name, fn_offset);
+        }
+		ebp = *ptr_ebp;
+	}
+
+	return 0;
+}
+```
+
+Recompile and run:
+
+``` assembly
+K> backtrace
+Stack backtrace:
+	     ebp f010ff68  eip f010090a  args 1 f010ff80 0 f010ffc8 f0112540
+	     	     kern/monitor.c:141: monitor+256
+	     ebp f010ffd8  eip f01000e1  args 0 1aac 640 0 0
+	     	     kern/init.c:43: i386_init+77
+	     ebp f010fff8  eip f010003e  args 111021 0 0 0 0
+	     	     kern/entry.S:83: <unknown>+0
+K> 
+```
+
+## Conclusion
+
+A typical x86 PC boots in a sequence as follows:
+
+-  BIOS: 
+  - `pc:eip` is hard-wired to be `0xf000:0x0fff`, then jump to the first instruction of BIOS
+  - 16-bit real mode addressing.
+  - STOP, checking the hardware. Load the first section of the floppy to `0x7c00`.
+- BOOTLOADER:
+  - Occupy the first section of the boot-able device.
+  - Loaded by BIOS to the physical address from `0x7c00` to `0x7dff`
+  - Switch from 16-bit real mode to 32-bit protected mode.
+  - jump to kernel
+- KERNEL: 
+  - Loaded at the physical address `0x100000`, while remapped to `0xf0100000`
+  - Turn on paging and stack.
+
+## Reference
+
+Exercise 12: <https://www.jianshu.com/p/84f62a05a7e6>
