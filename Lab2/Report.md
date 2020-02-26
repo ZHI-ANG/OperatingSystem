@@ -539,6 +539,8 @@ check_va2pa(pde_t *pgdir, uintptr_t va)
 
 These are useful references for us to fulfill the function `page_walk()`.
 
+The rest functions to fill are not straightforward but quite understandable, just according to the descriptive comment above.
+
 **2. `boot_map_region()`**
 
 ``` c
@@ -674,6 +676,26 @@ page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
 	}
 	*pte = page2pa(pp) | perm | PTE_P;
 	pp->pp_ref++;
+	return 0;
+}
+```
+
+Though this solution is straightforward, the special case is distinguished in the code. An improved version of this code is:
+
+``` c
+int
+page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
+{
+	// Fill this function in
+	pte_t *pte = pgdir_walk(pgdir, va, 1);
+	if(!pte){
+		return -E_NO_MEM;
+	}
+	pp->pp_ref++; // increase the reference count first
+	if(*pte & PTE_P){
+		page_remove(pgdir, va);
+	}
+	*pte = page2pa(pp) | perm | PTE_P;
 	return 0;
 }
 ```
