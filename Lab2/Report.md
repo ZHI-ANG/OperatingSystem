@@ -85,9 +85,33 @@ Before starting up, there are some terminologies need to be clarified:
  *     there if desired.  JOS user programs map pages temporarily at UTEMP.
  */
 
+/*
+ * The page directory entry corresponding to the virtual address range
+ * [UVPT, UVPT + PTSIZE) points to the page directory itself.  Thus, the page
+ * directory is treated as a page table as well as a page directory.
+ *
+ * One result of treating the page directory as a page table is that all PTEs
+ * can be accessed through a "virtual page table" at virtual address UVPT (to
+ * which uvpt is set in lib/entry.S).  The PTE for page number N is stored in
+ * uvpt[N].  (It's worth drawing a diagram of this!)
+ *
+ * A second consequence is that the contents of the current page directory
+ * will always be available at virtual address (UVPT + (UVPT >> PGSHIFT)), to
+ * which uvpd is set in lib/entry.S.
+ */
 ```
 
+**Notice: UVPT**
 
+If we put a pointer into the page directory that points back to itself at index V, as in
+
+![vpt](img/vpt.png)
+
+then when we try to translate a virtual address with PDX and PTX equal to V, following three arrows leaves us at the page directory. So that virtual page translates to the page holding the page directory. In Jos, V is 0x3BD, so the virtual address of the UVPD is (0x3BD<<22)|(0x3BD<<12).
+
+Now, if we try to translate a virtual address with PDX = V but an arbitrary PTX != V, then following three arrows from CR3 ends one level up from usual (instead of two as in the last case), which is to say in the page tables. So the set of virtual pages with PDX=V form a 4MB region whose page contents, as far as the processor is concerned, are the page tables themselves. In Jos, V is 0x3BD so the virtual address of the UVPT is (0x3BD<<22).
+
+So because of the "no-op" arrow we've cleverly inserted into the page directory, we've mapped the pages being used as the page directory and page table (which are normally virtually invisible) into the virtual address space.
 
 **Exercise 1.** In the file `kern/pmap.c`, you must implement code for the following functions (probably in the order given).
 
@@ -357,7 +381,7 @@ check_page_alloc() succeeded!
           ---------->|              |         |           |
                      | Segmentation |         |  Paging   |
 Software             |              |-------->|           |---------->  RAM
-            Offset   |  Mechanism   |         | Mechanism |
+c pointer   Offset   |  Mechanism   |         | Mechanism |
           ---------->|              |         |           |
                      +--------------+         +-----------+
             Virtual                   Linear                Physical
@@ -432,6 +456,17 @@ page_insert()
 
 **1. `pgdir_walk()`**
 
+The description of this function is given in the comment, but it's still necessary to clarify the principle of paging here, by an image.
+
+![paging](img/paging.png)
+
+**Notice: ** Address of each Page Table is physical address, and they are not contiguous with each other. To manage these fragmentations of Page Table, x86 takes the advantage of Page Directory, which is a block of contiguous addresses pointing to the corresponding address of Page Table. Thus, if we want to fetch a page with a corresponding linear address `va` in RAM, we need to do the following steps:
+
+- call `pgdir=lcr3()` to fetch the address of the page directory.
+- call `pdx = PDX(va)` and `pde = pgdir[pdx]` to obtain the address of a page dir entry.
+- call `PTE_ADDR(pde)` to fetch the virtual address of page table entry.
+- call `KADDR(PTE_ADDR(pde))` to obtain the physical address of the page table entry.
+
 ``` c
 // Given 'pgdir', a pointer to a page directory, pgdir_walk returns
 // a pointer to the page table entry (PTE) for linear address 'va'.
@@ -502,5 +537,146 @@ check_va2pa(pde_t *pgdir, uintptr_t va)
 }
 ```
 
-These are useful reference for us to fulfill the function `page_walk()`.
+These are useful references for us to fulfill the function `page_walk()`.
+
+**2. `boot_map_region()`**
+
+``` c
+//
+// Map [va, va+size) of virtual address space to physical [pa, pa+size)
+// in the page table rooted at pgdir.  Size is a multiple of PGSIZE, and
+// va and pa are both page-aligned.
+// Use permission bits perm|PTE_P for the entries.
+//
+// This function is only intended to set up the ``static'' mappings
+// above UTOP. As such, it should *not* change the pp_ref field on the
+// mapped pages.
+//
+// Hint: the TA solution uses pgdir_walk
+static void
+boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)
+{
+	// Fill this function in
+	pte_t *pte;
+	uintptr_t end_addr = va + size;
+	for(; va < end_addr; va+=PGSIZE, pa += PGSIZE){
+		pte = pgdir_walk(pgdir, (void *)va, 1);
+		if(! pte) return;
+		*pte = pa | perm | PTE_P;
+	}
+}
+```
+
+**3. `page_lookup()`**
+
+``` c
+//
+// Return the page mapped at virtual address 'va'.
+// If pte_store is not zero, then we store in it the address
+// of the pte for this page.  This is used by page_remove and
+// can be used to verify page permissions for syscall arguments,
+// but should not be used by most callers.
+//
+// Return NULL if there is no page mapped at va.
+//
+// Hint: the TA solution uses pgdir_walk and pa2page.
+//
+struct PageInfo *
+page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)
+{
+	// Fill this function in
+	pte_t *pte = pgdir_walk(pgdir, va, 0);
+	if(!pte)
+		return NULL;
+	if(pte_store){
+		*pte_store = pte;
+	}
+	return pa2page(PTE_ADDR(*pte));
+}
+```
+
+**4. `page_remove()`**
+
+``` c
+//
+// Unmaps the physical page at virtual address 'va'.
+// If there is no physical page at that address, silently does nothing.
+//
+// Details:
+//   - The ref count on the physical page should decrement.
+//   - The physical page should be freed if the refcount reaches 0.
+//   - The pg table entry corresponding to 'va' should be set to 0.
+//     (if such a PTE exists)
+//   - The TLB must be invalidated if you remove an entry from
+//     the page table.
+//
+// Hint: The TA solution is implemented using page_lookup,
+// 	tlb_invalidate, and page_decref.
+//
+void
+page_remove(pde_t *pgdir, void *va)
+{
+	// Fill this function in
+	pte_t *pte = NULL;
+	struct PageInfo *pp = page_lookup(pgdir, va, &pte);
+	if(!pp){
+		return;
+	}
+	page_decref(pp);
+	*pte = 0;
+	tlb_invalidate(pgdir, va);
+}
+```
+
+**5. `page_insert()`**
+
+``` c
+//
+// Map the physical page 'pp' at virtual address 'va'.
+// The permissions (the low 12 bits) of the page table entry
+// should be set to 'perm|PTE_P'.
+//
+// Requirements
+//   - If there is already a page mapped at 'va', it should be page_remove()d.
+//   - If necessary, on demand, a page table should be allocated and inserted
+//     into 'pgdir'.
+//   - pp->pp_ref should be incremented if the insertion succeeds.
+//   - The TLB must be invalidated if a page was formerly present at 'va'.
+//
+// Corner-case hint: Make sure to consider what happens when the same
+// pp is re-inserted at the same virtual address in the same pgdir.
+// However, try not to distinguish this case in your code, as this
+// frequently leads to subtle bugs; there's an elegant way to handle
+// everything in one code path.
+//
+// RETURNS:
+//   0 on success
+//   -E_NO_MEM, if page table couldn't be allocated
+//
+// Hint: The TA solution is implemented using pgdir_walk, page_remove,
+// and page2pa.
+//
+int
+page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
+{
+	// Fill this function in
+	pte_t *pte = pgdir_walk(pgdir, va, 1);
+	if(!pte){
+		return -E_NO_MEM;
+	}
+	if(*pte & PTE_P){
+		if(page2pa(pp) == PTE_ADDR(*pte)){
+			*pte = page2pa(pp) | perm | PTE_P;
+			return 0;
+		} else {
+			page_remove(pgdir, va);
+		}
+	}
+	*pte = page2pa(pp) | perm | PTE_P;
+	pp->pp_ref++;
+	return 0;
+}
+```
+
+## Part 3: Kernel Address Space
 
