@@ -6,7 +6,11 @@ The first component is a physical memory allocator for the kernel, so that the k
 
 Before starting up, there are some terminologies need to be clarified:
 
-``` c
+**1. Page Table**
+
+`x86` uses a two-level page table to save space. A typical Virtual Address looks like this:
+
+``` shell
 // A linear address 'la' has a three-part structure as follows:
 //
 // +--------10------+-------10-------+---------12----------+
@@ -19,8 +23,17 @@ Before starting up, there are some terminologies need to be clarified:
 // The PDX, PTX, PGOFF, and PGNUM macros decompose linear addresses as shown.
 // To construct a linear address la from PDX(la), PTX(la), and PGOFF(la),
 // use PGADDR(PDX(la), PTX(la), PGOFF(la)).
+```
 
+The PD part of the VA is the index of the Page Directory, the PT part of the VA is the index of the Page Table. In JOS, the Page Directory locates at the first 4KB-aligned address behind the kernel. Since the PD index is 10-bit, and each of the PDE is 32-bit(4 Byte), the size of the Page Directory is thus 4KB, which is just the size of a page. Each PDE points to an entry of a Page Table, which is also of 4KB size. Thus the total space of a full Page Table should be :
+$$
+4KB * 1024 = 4MB
+$$
+However, the PDE could be invalid if the corresponding Page Table is not allocated, as is often the case for a process is often small.
 
+**2. Virtual Memory Map**
+
+``` c
 /*
  * Virtual memory map:                                Permissions
  *                                                    kernel/user
@@ -101,7 +114,7 @@ Before starting up, there are some terminologies need to be clarified:
  */
 ```
 
-**Notice: UVPT**
+**3. UVPT**
 
 If we put a pointer into the page directory that points back to itself at index V, as in
 
@@ -808,3 +821,15 @@ boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm
 ```
 
 Now we could pass the `check_kern_pgdir()` and `check_page_installed_pgdir()` test.
+
+## Conclusion
+
+In Lab 2, our main effort is completing the function `mem_init()`, by which the kernel sets up paging mechanism.
+
+JOS maps the kernel to VA from `KERNBASE` and PA from `0x00`, and maintain a struct `pages` to keep track of the physical pages. 
+
+
+
+## Reference
+
+<https://www.jianshu.com/p/3be92c8228b6>
